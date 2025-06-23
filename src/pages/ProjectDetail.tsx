@@ -1,12 +1,16 @@
 import { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowLeft } from "lucide-react";
 import { Project } from "@/components/ProjectCard";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
-import { getProjectById, getProjectContent, ProjectContent } from "@/services/projectService";
+import { getProjectById, getProjectContent, ProjectContent, deleteProject } from "@/services/projectService";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import EpicsView from "@/components/EpicsView";
+import UserStoriesView from "@/components/UserStoriesView";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Epic {
   id?: string;
@@ -26,70 +30,79 @@ interface Epic {
 const ProjectDetail = () => {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [project, setProject] = useState<Project | null>(null);
   const [projectContent, setProjectContent] = useState<ProjectContent | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
 
+  const currentTab = searchParams.get("tab") || "epics";
+
+  const handleTabChange = (value: string) => {
+    setSearchParams({ tab: value });
+  };
+
+  // Vérification de l'authentification
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        navigate("/login");
+      } else {
+        setAuthChecked(true);
+      }
+    };
+    checkAuth();
+  }, [navigate]);
+
+  // Chargement des données du projet
   useEffect(() => {
     const loadProject = async () => {
+      if (!authChecked || !projectId) return;
+
       try {
         setIsLoading(true);
-        
-        // Vérifier l'authentification
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          navigate("/login");
-          return;
-        }
-        
-        if (!projectId) {
-          toast.error("ID de projet invalide");
-          navigate("/");
-          return;
-        }
+        console.log("Début du chargement du projet:", projectId);
 
         // Charger les détails du projet depuis Supabase
         const projectData = await getProjectById(projectId);
         
         if (!projectData) {
+          console.error("Projet non trouvé:", projectId);
           toast.error("Projet non trouvé");
-          navigate("/");
+          navigate("/dashboard");
           return;
         }
         
+        console.log("Projet chargé avec succès:", projectData);
         setProject(projectData);
         
         // Charger les EPICs et User Stories depuis Supabase
         try {
+          console.log("Début du chargement du contenu du projet...");
           const content = await getProjectContent(projectId);
+          console.log("Contenu du projet chargé avec succès:", content);
+          console.log("Nombre d'EPICs:", content.epics.length);
+          content.epics.forEach((epic, index) => {
+            console.log(`EPIC ${index + 1}:`, epic.title);
+            console.log(`Nombre de stories pour cet EPIC: ${epic.stories.length}`);
+          });
           setProjectContent(content);
         } catch (contentError) {
-          console.error("Erreur lors du chargement du contenu:", contentError);
-          
-          // Fallback vers localStorage pour la compatibilité
-          const contentJson = localStorage.getItem(`project_${projectId}_content`);
-          if (contentJson) {
-            try {
-              setProjectContent(JSON.parse(contentJson));
-            } catch (parseError) {
-              console.error("Erreur lors du parsing du contenu localStorage:", parseError);
-              toast.error("Impossible de charger le contenu du projet");
-            }
-          } else {
-            toast.error("Aucun contenu trouvé pour ce projet");
-          }
+          console.error("Erreur détaillée lors du chargement du contenu:", contentError);
+          toast.error("Impossible de charger le contenu du projet");
         }
       } catch (error) {
-        console.error("Erreur lors du chargement du projet:", error);
+        console.error("Erreur détaillée lors du chargement du projet:", error);
         toast.error("Erreur lors du chargement du projet");
-        navigate("/");
       } finally {
         setIsLoading(false);
       }
     };
 
     loadProject();
-  }, [projectId, navigate]);
+  }, [projectId, navigate, authChecked]);
 
   // Fonction pour transformer projectContent en un format plus simple pour l'affichage
   const getFormattedEpics = (): Epic[] => {
@@ -111,7 +124,19 @@ const ProjectDetail = () => {
     }));
   };
 
-  if (isLoading) {
+  const handleDeleteProject = async () => {
+    if (!projectId) return;
+    try {
+      await deleteProject(projectId);
+      toast.success("Projet supprimé avec succès");
+      navigate("/dashboard");
+    } catch (error) {
+      console.error("Erreur lors de la suppression du projet:", error);
+      toast.error("Erreur lors de la suppression du projet");
+    }
+  };
+
+  if (!authChecked || isLoading) {
     return (
       <div className="container max-w-6xl py-8">
         <div className="flex justify-center items-center py-12">
@@ -122,15 +147,22 @@ const ProjectDetail = () => {
   }
 
   if (!project) {
-    return null;
+    return (
+      <div className="container max-w-6xl py-8">
+        <div className="flex flex-col items-center justify-center py-12">
+          <p className="text-xl font-medium mb-4">Projet non trouvé</p>
+          <Button variant="default" onClick={() => navigate("/dashboard")}>
+            Retour au tableau de bord
+          </Button>
+        </div>
+      </div>
+    );
   }
-
-  const formattedEpics = getFormattedEpics();
 
   return (
     <div className="container max-w-6xl py-8 animate-fade-in">
       <div className="flex items-center gap-4 mb-8">
-        <Button variant="outline" onClick={() => navigate("/")} className="group">
+        <Button variant="outline" onClick={() => navigate("/dashboard")} className="group">
           <ArrowLeft className="mr-2 h-4 w-4 transform transition-transform group-hover:-translate-x-1" />
           Retour
         </Button>
@@ -140,41 +172,41 @@ const ProjectDetail = () => {
         </div>
       </div>
 
-      {formattedEpics.length > 0 ? (
-        <div className="space-y-8">
-          {formattedEpics.map((epic, epicIndex) => (
-            <Card key={epic.id || epicIndex} className="glass-card">
-              <CardHeader>
-                <CardTitle className="text-xl">
-                  EPIC {epicIndex + 1}: {epic.title}
-                </CardTitle>
-                <p className="text-muted-foreground">{epic.description}</p>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {epic.stories.map((story, storyIndex) => (
-                    <Card key={story.id || storyIndex} className="glass-card">
-                      <CardHeader>
-                        <CardTitle className="text-lg">
-                          User Story {storyIndex + 1}: {story.title}
-                        </CardTitle>
-                        <p className="text-muted-foreground">{story.description}</p>
-                      </CardHeader>
-                    </Card>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : (
-        <div className="flex flex-col items-center justify-center py-12 bg-muted/20 rounded-lg">
-          <h3 className="text-xl font-medium mb-2">Aucun contenu trouvé</h3>
-          <p className="text-muted-foreground text-center max-w-md">
-            Les EPICs et User Stories n'ont pas pu être chargés pour ce projet.
-          </p>
-        </div>
-      )}
+      <div className="flex justify-end mb-4">
+        <Button variant="destructive" onClick={() => setIsDeleteDialogOpen(true)}>
+          Supprimer le projet
+        </Button>
+      </div>
+
+      <Tabs value={currentTab} onValueChange={handleTabChange} className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="epics">EPICs</TabsTrigger>
+          <TabsTrigger value="stories">User Stories</TabsTrigger>
+        </TabsList>
+        <TabsContent value="epics">
+          <EpicsView projectId={projectId} />
+        </TabsContent>
+        <TabsContent value="stories">
+          <UserStoriesView projectId={projectId} epicId={searchParams.get("epic") || ""} />
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmer la suppression</DialogTitle>
+          </DialogHeader>
+          <p>Êtes-vous sûr de vouloir supprimer ce projet ? Cette action est irréversible.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsDeleteDialogOpen(false)}>
+              Annuler
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteProject}>
+              Supprimer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

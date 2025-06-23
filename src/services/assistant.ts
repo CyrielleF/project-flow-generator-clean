@@ -24,6 +24,44 @@ interface ProjectContent {
   epics: Epic[];
 }
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 seconde
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const checkRunStatus = async (threadId: string, runId: string, retryCount = 0): Promise<any> => {
+  try {
+    const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+      headers: {
+        'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Erreur API (${response.status}):`, errorData);
+      
+      if (response.status === 500 && retryCount < MAX_RETRIES) {
+        console.log(`Tentative ${retryCount + 1}/${MAX_RETRIES} - Attente de ${RETRY_DELAY}ms...`);
+        await sleep(RETRY_DELAY);
+        return checkRunStatus(threadId, runId, retryCount + 1);
+      }
+      
+      throw new Error(`Erreur lors de la vérification du statut (${response.status}): ${errorData}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && retryCount < MAX_RETRIES) {
+      console.log(`Erreur réseau, tentative ${retryCount + 1}/${MAX_RETRIES} - Attente de ${RETRY_DELAY}ms...`);
+      await sleep(RETRY_DELAY);
+      return checkRunStatus(threadId, runId, retryCount + 1);
+    }
+    throw error;
+  }
+};
+
 export const generateProjectSpecifications = async (
   projectTitle: string,
   projectDescription: string
@@ -50,7 +88,7 @@ export const generateProjectSpecifications = async (
     if (!threadResponse.ok) {
       const error = await threadResponse.text();
       console.error('Erreur thread response:', error);
-      throw new Error(`Erreur lors de la création du thread: ${threadResponse.status} - ${error}`);
+      throw new Error(`Erreur lors de la création du thread (${threadResponse.status}): ${error}`);
     }
 
     const thread = await threadResponse.json();
@@ -74,7 +112,7 @@ export const generateProjectSpecifications = async (
     if (!messageResponse.ok) {
       const error = await messageResponse.text();
       console.error('Erreur message response:', error);
-      throw new Error(`Erreur lors de l'ajout du message: ${messageResponse.status} - ${error}`);
+      throw new Error(`Erreur lors de l'ajout du message (${messageResponse.status}): ${error}`);
     }
 
     console.log('Message ajouté au thread');
@@ -96,13 +134,13 @@ export const generateProjectSpecifications = async (
     if (!runResponse.ok) {
       const error = await runResponse.text();
       console.error('Erreur run response:', error);
-      throw new Error(`Erreur lors du lancement de l'assistant: ${runResponse.status} - ${error}`);
+      throw new Error(`Erreur lors du lancement de l'assistant (${runResponse.status}): ${error}`);
     }
 
     const run = await runResponse.json();
     console.log('Run créé:', run.id);
 
-    // 4. Attendre la réponse (polling)
+    // 4. Attendre la réponse (polling avec retries)
     console.log('Attente de la réponse...');
     let runStatus = await checkRunStatus(thread.id, run.id);
     let attempts = 0;
@@ -111,9 +149,9 @@ export const generateProjectSpecifications = async (
     while (runStatus.status !== 'completed' && attempts < maxAttempts) {
       if (runStatus.status === 'failed') {
         console.error('Run status failed:', runStatus);
-        throw new Error('La génération a échoué: ' + runStatus.last_error?.message || 'Erreur inconnue');
+        throw new Error('La génération a échoué: ' + (runStatus.last_error?.message || 'Erreur inconnue'));
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await sleep(1000);
       runStatus = await checkRunStatus(thread.id, run.id);
       attempts++;
       console.log('Status actuel:', runStatus.status, `(tentative ${attempts}/${maxAttempts})`);
@@ -135,7 +173,7 @@ export const generateProjectSpecifications = async (
     if (!messagesResponse.ok) {
       const error = await messagesResponse.text();
       console.error('Erreur messages response:', error);
-      throw new Error(`Erreur lors de la récupération des messages: ${messagesResponse.status} - ${error}`);
+      throw new Error(`Erreur lors de la récupération des messages (${messagesResponse.status}): ${error}`);
     }
 
     const messages = await messagesResponse.json();
@@ -188,56 +226,11 @@ export const generateProjectSpecifications = async (
       console.log('Impossible de sauvegarder dans localStorage:', e);
     }
     
-    // Logs de débogage pour le parsing 
-    console.log('Sections EPIC trouvées:', content.split('EPIC').length - 1);
-    
-    // Créer une version modifiée du parser pour analyser la structure
-    console.log('Analyse de la structure de la réponse:');
-    const epicSections = content.split(/### EPIC \d+ :/).filter(Boolean);
-    if (epicSections.length > 0) {
-      console.log(`Nombre d'EPICs détectés (format ###): ${epicSections.length}`);
-      console.log('Premier EPIC (extrait):', epicSections[0].substring(0, 200) + '...');
-      
-      // Essayer de détecter le format des User Stories
-      const userStoryPattern = /##### User Story \d+/;
-      const hasStructuredUserStories = userStoryPattern.test(content);
-      console.log('Format de User Stories structuré détecté:', hasStructuredUserStories);
-      
-      if (hasStructuredUserStories) {
-        const userStoryMatches = content.match(/##### User Story \d+/g);
-        console.log(`Nombre de User Stories détectées: ${userStoryMatches ? userStoryMatches.length : 0}`);
-      }
-    } else {
-      // Essayer d'autres formats si le format principal n'est pas détecté
-      console.log('Format ### EPIC non détecté, recherche d\'alternatives...');
-      
-      // Vérifier si le format utilise simplement "EPIC" sans le motif "### EPIC N :"
-      const simpleEpicSections = content.split(/EPIC \d+/).filter(Boolean);
-      if (simpleEpicSections.length > 0) {
-        console.log(`Nombre d'EPICs détectés (format simple): ${simpleEpicSections.length}`);
-      }
-    }
-
     return parseAssistantResponse(content);
   } catch (error) {
     console.error('Erreur détaillée lors de la génération des spécifications:', error);
     throw error;
   }
-};
-
-const checkRunStatus = async (threadId: string, runId: string) => {
-  const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-    headers: {
-      'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
-      'OpenAI-Beta': 'assistants=v2'
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Erreur lors de la vérification du statut: ${response.status}`);
-  }
-
-  return response.json();
 };
 
 // Amélioration de la fonction de parsing pour mieux gérer différents formats

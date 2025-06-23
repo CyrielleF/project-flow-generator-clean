@@ -19,5 +19,5 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  envPrefix: 'REACT_APP_',
+  envPrefix: 'VITE_',
 }));

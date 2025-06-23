@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Plus, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { AIService } from "../services/aiService";
+import { getProjectContent } from "@/services/projectService";
 
 interface Epic {
   id: string;
@@ -40,67 +41,61 @@ interface EpicsViewProps {
 
 const EpicsView = ({ projectId }: EpicsViewProps) => {
   const [epics, setEpics] = useState<Epic[]>([]);
-  const [specification, setSpecification] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
   
   useEffect(() => {
-    // Load specification and epics from localStorage
-    const savedSpec = localStorage.getItem(`project_${projectId}_specification`);
-    const savedEpics = localStorage.getItem(`project_${projectId}_epics`);
-    
-    if (savedSpec) setSpecification(savedSpec);
-    if (savedEpics) setEpics(JSON.parse(savedEpics));
+    const loadEpics = async () => {
+      try {
+        console.log("Début du chargement des EPICs pour le projet:", projectId);
+        setIsLoading(true);
+        const content = await getProjectContent(projectId);
+        console.log("Contenu reçu de getProjectContent:", content);
+        
+        // Transformer les données au format attendu par le composant
+        const formattedEpics = content.epics.map(epic => {
+          console.log("Transformation de l'EPIC:", epic);
+          return {
+            id: epic.id || '',
+            title: epic.title,
+            description: epic.objective,
+            objective: epic.objective,
+            businessProblem: epic.problemAddressed,
+            businessValue: epic.businessValue,
+            stories: epic.stories.map(story => ({
+              id: story.id || '',
+              title: story.story,
+              description: story.story,
+              acceptanceCriteria: story.acceptanceCriteria.map(ac => `${ac.given} ${ac.when} ${ac.then}`),
+              definitionOfDone: [],
+              mockupUrl: story.designLink,
+              status: story.status?.replace('_', '-') as "todo" | "in-progress" | "done" || "todo"
+            }))
+          };
+        });
+        
+        console.log("EPICs formatés:", formattedEpics);
+        setEpics(formattedEpics);
+      } catch (error) {
+        console.error('Erreur détaillée lors du chargement des EPICs:', error);
+        toast.error("Erreur lors du chargement des EPICs");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadEpics();
   }, [projectId]);
 
   const viewUserStories = (epicId: string) => {
     navigate(`/project/${projectId}?tab=stories&epic=${epicId}`);
   };
 
-  const generateEpicsAndStories = async () => {
-    if (!specification) return;
-
-    try {
-      setIsGenerating(true);
-      const aiService = new AIService();
-      const generatedEpics = await aiService.generateEpicsAndStories(specification);
-      
-      // Add IDs to the generated epics and stories
-      const epicsWithIds = generatedEpics.map((epic, index) => ({
-        ...epic,
-        id: `epic${index + 1}`,
-        description: epic.objective,
-        stories: epic.stories.map((story, storyIndex) => ({
-          ...story,
-          id: `story_${index + 1}_${storyIndex + 1}`
-        }))
-      }));
-
-      setEpics(epicsWithIds);
-      localStorage.setItem(`project_${projectId}_epics`, JSON.stringify(epicsWithIds));
-      toast.success("EPICs et User Stories générés avec succès");
-    } catch (error) {
-      console.error('Erreur lors de la génération:', error);
-      toast.error("Erreur lors de la génération des EPICs");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  if (!specification) {
+  if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-12 animate-fade-in">
         <FileText className="h-16 w-16 text-muted-foreground mb-4" />
-        <h3 className="text-xl font-medium mb-2">Spécifications manquantes</h3>
-        <p className="text-muted-foreground text-center max-w-md mb-6">
-          Vous devez d'abord générer les spécifications du projet pour accéder aux EPICs.
-        </p>
-        <Button 
-          variant="default" 
-          onClick={() => navigate(`/project/${projectId}?tab=specification`)}
-        >
-          Générer les spécifications
-        </Button>
+        <h3 className="text-xl font-medium mb-2">Chargement des EPICs...</h3>
       </div>
     );
   }
@@ -111,14 +106,13 @@ const EpicsView = ({ projectId }: EpicsViewProps) => {
         <FileText className="h-16 w-16 text-muted-foreground mb-4" />
         <h3 className="text-xl font-medium mb-2">Aucun EPIC disponible</h3>
         <p className="text-muted-foreground text-center max-w-md mb-6">
-          Les EPICs seront générés automatiquement à partir des spécifications.
+          Commencez par générer les spécifications du projet pour créer automatiquement les EPICs.
         </p>
         <Button 
-          variant="default"
-          onClick={generateEpicsAndStories}
-          disabled={isGenerating}
+          variant="default" 
+          onClick={() => navigate(`/project/${projectId}?tab=specification`)}
         >
-          {isGenerating ? "Génération en cours..." : "Générer les EPICs"}
+          Générer les spécifications
         </Button>
       </div>
     );
