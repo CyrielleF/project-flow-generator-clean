@@ -53,49 +53,64 @@ const convertFromSupabaseProject = (project: any): Project => {
 
 // Créer un nouveau projet dans Supabase
 export const createProject = async (project: Omit<Project, 'id'>, userId: string, content?: ProjectContent): Promise<Project> => {
-  // 1. Créer le projet de base
-  const supabaseProject = convertToSupabaseProject({
-    id: '', // ID temporaire, sera remplacé par celui généré par Supabase
-    ...project
-  }, userId);
+  try {
+    // 1. Créer le projet de base
+    const supabaseProject = convertToSupabaseProject({
+      id: '', // ID temporaire, sera remplacé par celui généré par Supabase
+      ...project
+    }, userId);
 
-  const { data: projectData, error: projectError } = await supabase
-    .from('projects')
-    .insert(supabaseProject)
-    .select()
-    .single();
+    const { data: projectData, error: projectError } = await supabase
+      .from('projects')
+      .insert(supabaseProject)
+      .select()
+      .single();
 
-  if (projectError) {
-    console.error('Erreur lors de la création du projet:', projectError);
-    throw projectError;
-  }
-
-  const newProject = convertFromSupabaseProject(projectData);
-
-  // 2. Sauvegarder le contenu (EPICs et Stories) si fourni
-  if (content) {
-    try {
-      await saveProjectContent(newProject.id, content);
-      
-      // Mettre à jour les compteurs
-      newProject.epicsCount = content.epics.length;
-      newProject.storiesCount = content.epics.reduce((acc, epic) => acc + epic.stories.length, 0);
-      
-      // Pour la compatibilité temporaire avec le code existant
-      localStorage.setItem(`project_${newProject.id}_content`, JSON.stringify(content));
-    } catch (contentError) {
-      console.error('Erreur lors de la sauvegarde du contenu:', contentError);
-      // Ne pas faire échouer la création du projet si le contenu n'a pas pu être sauvegardé
+    if (projectError) {
+      console.error('Erreur lors de la création du projet:', projectError);
+      throw projectError;
     }
-  }
 
-  return newProject;
+    console.log('Projet créé avec succès:', projectData);
+    const newProject = convertFromSupabaseProject(projectData);
+
+    // 2. Sauvegarder le contenu (EPICs et Stories) si fourni
+    if (content) {
+      try {
+        console.log('Début de la sauvegarde du contenu pour le projet', newProject.id);
+        console.log('Nombre d\'EPICs à sauvegarder:', content.epics.length);
+        
+        await saveProjectContent(newProject.id, content);
+        console.log('Contenu sauvegardé avec succès');
+        
+        // Mettre à jour les compteurs
+        newProject.epicsCount = content.epics.length;
+        newProject.storiesCount = content.epics.reduce((acc, epic) => acc + epic.stories.length, 0);
+        
+        // Pour la compatibilité temporaire avec le code existant
+        localStorage.setItem(`project_${newProject.id}_content`, JSON.stringify(content));
+      } catch (contentError) {
+        console.error('Erreur détaillée lors de la sauvegarde du contenu:', contentError);
+        throw new Error(`Erreur lors de la sauvegarde du contenu: ${contentError instanceof Error ? contentError.message : 'Erreur inconnue'}`);
+      }
+    }
+
+    return newProject;
+  } catch (error) {
+    console.error('Erreur globale lors de la création du projet:', error);
+    throw error;
+  }
 };
 
 // Sauvegarder le contenu d'un projet (EPICs et User Stories) dans Supabase
 export const saveProjectContent = async (projectId: string, content: ProjectContent): Promise<void> => {
+  console.log('Début de saveProjectContent pour le projet', projectId);
+  console.log('Contenu à sauvegarder:', JSON.stringify(content, null, 2));
+
   // Pour chaque EPIC, insérer et récupérer son ID
   for (const epic of content.epics) {
+    console.log('Sauvegarde de l\'EPIC:', epic.title);
+    
     const { data: epicData, error: epicError } = await supabase
       .from('epics')
       .insert({
@@ -110,13 +125,16 @@ export const saveProjectContent = async (projectId: string, content: ProjectCont
 
     if (epicError) {
       console.error('Erreur lors de la création de l\'EPIC:', epicError);
-      continue; // Passer à l'EPIC suivant
+      throw epicError;
     }
 
+    console.log('EPIC créé avec succès:', epicData);
     const epicId = epicData.id;
 
     // Pour chaque User Story, insérer et récupérer son ID
     for (const story of epic.stories) {
+      console.log('Sauvegarde de la User Story:', story.story);
+      
       const { data: storyData, error: storyError } = await supabase
         .from('stories')
         .insert({
@@ -130,43 +148,58 @@ export const saveProjectContent = async (projectId: string, content: ProjectCont
 
       if (storyError) {
         console.error('Erreur lors de la création de la User Story:', storyError);
-        continue; // Passer à la Story suivante
+        throw storyError;
       }
 
+      console.log('User Story créée avec succès:', storyData);
       const storyId = storyData.id;
 
       // Insérer les critères d'acceptation
-      const acceptanceCriteriaInserts = story.acceptanceCriteria.map(criteria => ({
-        given_condition: criteria.given,
-        when_action: criteria.when,
-        then_result: criteria.then,
-        story_id: storyId
-      }));
+      if (story.acceptanceCriteria && story.acceptanceCriteria.length > 0) {
+        console.log('Sauvegarde des critères d\'acceptation pour la story:', storyId);
+        
+        const acceptanceCriteriaInserts = story.acceptanceCriteria.map(criteria => ({
+          given_condition: criteria.given,
+          when_action: criteria.when,
+          then_result: criteria.then,
+          story_id: storyId
+        }));
 
-      if (acceptanceCriteriaInserts.length > 0) {
         const { error: criteriaError } = await supabase
           .from('acceptance_criteria')
           .insert(acceptanceCriteriaInserts);
 
         if (criteriaError) {
           console.error('Erreur lors de la création des critères d\'acceptation:', criteriaError);
+          throw criteriaError;
         }
+        
+        console.log('Critères d\'acceptation sauvegardés avec succès');
       }
 
       // Insérer les métadonnées
-      const { error: metadataError } = await supabase
-        .from('story_metadata')
-        .insert({
-          story_id: storyId,
-          kpis: story.kpis,
-          design_link: story.designLink
-        });
+      if (story.kpis || story.designLink) {
+        console.log('Sauvegarde des métadonnées pour la story:', storyId);
+        
+        const { error: metadataError } = await supabase
+          .from('story_metadata')
+          .insert({
+            story_id: storyId,
+            kpis: story.kpis,
+            design_link: story.designLink
+          });
 
-      if (metadataError) {
-        console.error('Erreur lors de la création des métadonnées:', metadataError);
+        if (metadataError) {
+          console.error('Erreur lors de la création des métadonnées:', metadataError);
+          throw metadataError;
+        }
+        
+        console.log('Métadonnées sauvegardées avec succès');
       }
     }
   }
+  
+  console.log('Sauvegarde du contenu terminée avec succès');
 };
 
 // Récupérer tous les projets d'un utilisateur
@@ -294,15 +327,58 @@ export const getProjectById = async (projectId: string): Promise<Project | null>
 
 // Récupérer le contenu d'un projet (EPICs et User Stories) depuis Supabase
 export const getProjectContent = async (projectId: string): Promise<ProjectContent> => {
-  // 1. Récupérer tous les EPICs du projet
-  const { data: epicsData, error: epicsError } = await supabase
-    .from('epics')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('created_at', { ascending: true });
+  try {
+    // Récupérer les EPICs avec leurs stories et critères d'acceptation en une seule requête
+    const { data: epicsData, error: epicsError } = await supabase
+      .from('epics')
+      .select(`
+        *,
+        stories:stories(
+          *,
+          acceptance_criteria(*),
+          story_metadata(*)
+        )
+      `)
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: true });
 
-  if (epicsError) {
-    console.error('Erreur lors de la récupération des EPICs:', epicsError);
+    if (epicsError) {
+      console.error('Erreur lors de la récupération des EPICs:', epicsError);
+      throw epicsError;
+    }
+
+    if (!epicsData) {
+      return { epics: [] };
+    }
+
+    // Transformer les données au format attendu
+    const content: ProjectContent = {
+      epics: epicsData.map(epic => ({
+        id: epic.id,
+        title: epic.title,
+        objective: epic.objective || '',
+        problemAddressed: epic.problem_addressed || '',
+        businessValue: epic.business_value || '',
+        stories: (epic.stories || []).map(story => ({
+          id: story.id,
+          epic: epic.title,
+          story: story.story_description || story.title,
+          acceptanceCriteria: (story.acceptance_criteria || []).map(criteria => ({
+            id: criteria.id,
+            given: criteria.given_condition || '',
+            when: criteria.when_action || '',
+            then: criteria.then_result || ''
+          })),
+          kpis: story.story_metadata?.kpis || '',
+          designLink: story.story_metadata?.design_link || '',
+          status: story.status as "todo" | "in_progress" | "done"
+        }))
+      }))
+    };
+
+    return content;
+  } catch (error) {
+    console.error('Erreur lors de la récupération du contenu du projet:', error);
     
     // Fallback vers localStorage pour la compatibilité
     const contentJson = localStorage.getItem(`project_${projectId}_content`);
@@ -314,81 +390,8 @@ export const getProjectContent = async (projectId: string): Promise<ProjectConte
       }
     }
     
-    throw epicsError;
+    throw error;
   }
-
-  // Préparer le résultat
-  const content: ProjectContent = { epics: [] };
-
-  // Pour chaque EPIC, récupérer ses User Stories
-  for (const epic of epicsData) {
-    // 2. Récupérer toutes les User Stories de l'EPIC
-    const { data: storiesData, error: storiesError } = await supabase
-      .from('stories')
-      .select('*')
-      .eq('epic_id', epic.id)
-      .order('created_at', { ascending: true });
-
-    if (storiesError) {
-      console.error(`Erreur lors de la récupération des Stories pour l'EPIC ${epic.id}:`, storiesError);
-      continue; // Passer à l'EPIC suivant
-    }
-
-    // Préparer l'EPIC avec ses stories
-    const epicWithStories: Epic = {
-      id: epic.id,
-      title: epic.title,
-      objective: epic.objective || '',
-      problemAddressed: epic.problem_addressed || '',
-      businessValue: epic.business_value || '',
-      stories: []
-    };
-
-    // Pour chaque User Story, récupérer ses critères d'acceptation et métadonnées
-    for (const story of storiesData) {
-      // 3. Récupérer les critères d'acceptation
-      const { data: criteriaData, error: criteriaError } = await supabase
-        .from('acceptance_criteria')
-        .select('*')
-        .eq('story_id', story.id);
-
-      if (criteriaError) {
-        console.error(`Erreur lors de la récupération des critères pour la Story ${story.id}:`, criteriaError);
-        continue; // Passer à la Story suivante
-      }
-
-      // 4. Récupérer les métadonnées
-      const { data: metadataData, error: metadataError } = await supabase
-        .from('story_metadata')
-        .select('*')
-        .eq('story_id', story.id)
-        .single();
-
-      // Préparer la User Story
-      const userStory: UserStory = {
-        id: story.id,
-        epic: epic.title,
-        story: story.story_description || story.title,
-        acceptanceCriteria: criteriaData.map(criteria => ({
-          id: criteria.id,
-          given: criteria.given_condition || '',
-          when: criteria.when_action || '',
-          then: criteria.then_result || ''
-        })),
-        kpis: metadataData?.kpis || '',
-        designLink: metadataData?.design_link || '',
-        status: story.status as "todo" | "in_progress" | "done" || "todo"
-      };
-
-      // Ajouter la User Story à l'EPIC
-      epicWithStories.stories.push(userStory);
-    }
-
-    // Ajouter l'EPIC au contenu
-    content.epics.push(epicWithStories);
-  }
-
-  return content;
 };
 
 // Mettre à jour un projet

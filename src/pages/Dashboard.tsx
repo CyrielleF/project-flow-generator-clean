@@ -252,14 +252,6 @@ const Dashboard = () => {
                 Annuler
               </Button>
               <Button 
-                variant="secondary" 
-                onClick={createProjectWithoutAI}
-                className="w-full sm:w-auto"
-                disabled={!newProject.title.trim() || isGenerating}
-              >
-                Créer sans IA
-              </Button>
-              <Button 
                 onClick={createProject} 
                 disabled={isGenerating}
                 className="w-full sm:w-auto"

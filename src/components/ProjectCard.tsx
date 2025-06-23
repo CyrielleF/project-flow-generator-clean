@@ -21,7 +21,7 @@ const ProjectCard = ({ project }: ProjectCardProps) => {
   const navigate = useNavigate();
 
   const handleViewProject = () => {
-    navigate(`/project/${project.id}`);
+    navigate(`/project/${project.id}?tab=epics`);
   };
 
   return (

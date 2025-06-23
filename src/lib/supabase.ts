@@ -1,5 +1,16 @@
 import { createClient } from '@supabase/supabase-js'
 
+// Supabase configuration
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Supabase URL and Anon Key must be defined in environment variables');
+}
+
+// Create a single instance of the Supabase client
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
 export type Json =
   | string
   | number
@@ -210,11 +221,4 @@ export interface Database {
       }
     }
   }
-}
-
-// Définition hardcodée des informations Supabase
-const supabaseUrl = "https://mukwelacicyeuyvdxqgy.supabase.co";
-const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11a3dlbGFjaWN5ZXV5dmR4cWd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwODg0NTEsImV4cCI6MjA1ODY2NDQ1MX0.x0ps-SKesT0bPRwKOVdacM0JnG8ZDRNz9ldLo5nr0gA";
-
-// Création du client Supabase
-export const supabase = createClient(supabaseUrl, supabaseAnonKey); 
+} 
