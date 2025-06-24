@@ -64,7 +64,7 @@ const Navbar = () => {
             )}
           </Button>
           <a href="/dashboard" className="flex items-center gap-2">
-            <span className="font-bold text-xl text-primary">ProductFlow</span>
+            <span className="font-bold text-xl text-primary">Shapely</span>
           </a>
         </div>
 

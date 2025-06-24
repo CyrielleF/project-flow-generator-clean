@@ -26,6 +26,8 @@ interface ProjectContent {
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 seconde
+const MAX_ATTEMPTS = 60; // Augmenté à 60 secondes
+const POLLING_INTERVAL = 2000; // 2 secondes entre chaque vérification
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -62,6 +64,11 @@ const checkRunStatus = async (threadId: string, runId: string, retryCount = 0): 
   }
 };
 
+const ASSISTANT_IDS = {
+  EPICS: 'asst_FCjQ7uT86lbc2y1oz9opxgpO',
+  USER_STORIES: 'asst_BnNg3nqA8uBPfftaAKZL2xGh'
+};
+
 export const generateProjectSpecifications = async (
   projectTitle: string,
   projectDescription: string
@@ -73,6 +80,143 @@ export const generateProjectSpecifications = async (
     if (!OPENAI_CONFIG.apiKey) {
       throw new Error('La clé API OpenAI n\'est pas configurée');
     }
+
+    // 1. Générer d'abord les EPICs
+    console.log('Génération des EPICs...');
+    const epicsContent = await generateEpics(projectTitle, projectDescription);
+    
+    // 2. Pour chaque EPIC, générer les User Stories
+    console.log('Génération des User Stories pour chaque EPIC...');
+    const epicsWithStories = await Promise.all(
+      epicsContent.epics.map(async (epic) => {
+        const stories = await generateUserStories(epic.title, epic.objective, projectTitle);
+        return {
+          ...epic,
+          stories
+        };
+      })
+    );
+
+    return {
+      epics: epicsWithStories
+    };
+  } catch (error) {
+    console.error('Erreur lors de la génération des spécifications:', error);
+    throw error;
+  }
+};
+
+const generateEpics = async (projectTitle: string, projectDescription: string): Promise<ProjectContent> => {
+  try {
+    // 1. Créer un thread
+    console.log('Création du thread pour les EPICs...');
+    const threadResponse = await fetch('https://api.openai.com/v1/threads', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+
+    if (!threadResponse.ok) {
+      const error = await threadResponse.text();
+      throw new Error(`Erreur lors de la création du thread (${threadResponse.status}): ${error}`);
+    }
+
+    const thread = await threadResponse.json();
+    console.log('Thread créé:', thread.id);
+
+    // 2. Ajouter un message au thread
+    const messageResponse = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify({
+        role: 'user',
+        content: `Projet : ${projectTitle}\n\nDescription détaillée : ${projectDescription}\n\nMerci de générer les EPICs pour ce projet selon le format spécifié dans tes instructions.`
+      })
+    });
+
+    if (!messageResponse.ok) {
+      const error = await messageResponse.text();
+      throw new Error(`Erreur lors de l'ajout du message (${messageResponse.status}): ${error}`);
+    }
+
+    // 3. Exécuter l'assistant pour les EPICs
+    const runResponse = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify({
+        assistant_id: ASSISTANT_IDS.EPICS
+      })
+    });
+
+    if (!runResponse.ok) {
+      const error = await runResponse.text();
+      throw new Error(`Erreur lors du lancement de l'assistant (${runResponse.status}): ${error}`);
+    }
+
+    const run = await runResponse.json();
+    console.log('Run créé pour les EPICs:', run.id);
+
+    // 4. Attendre la réponse
+    let runStatus = await checkRunStatus(thread.id, run.id);
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    while (runStatus.status !== 'completed' && attempts < maxAttempts) {
+      if (runStatus.status === 'failed') {
+        throw new Error('La génération des EPICs a échoué: ' + (runStatus.last_error?.message || 'Erreur inconnue'));
+      }
+      await sleep(1000);
+      runStatus = await checkRunStatus(thread.id, run.id);
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error('Timeout: La génération des EPICs a pris trop de temps');
+    }
+
+    // 5. Récupérer les messages
+    const messagesResponse = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
+      headers: {
+        'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+
+    if (!messagesResponse.ok) {
+      const error = await messagesResponse.text();
+      throw new Error(`Erreur lors de la récupération des messages (${messagesResponse.status}): ${error}`);
+    }
+
+    const messages = await messagesResponse.json();
+    const assistantMessage = messages.data.find((msg: any) => msg.role === 'assistant');
+
+    if (!assistantMessage) {
+      throw new Error('Pas de réponse de l\'assistant pour les EPICs');
+    }
+
+    const response = assistantMessage.content[0].text.value;
+    return parseAssistantResponse(response);
+  } catch (error) {
+    console.error('Erreur lors de la génération des EPICs:', error);
+    throw error;
+  }
+};
+
+const generateUserStories = async (epicTitle: string, epicObjective: string, projectTitle: string): Promise<UserStory[]> => {
+  try {
+    console.log(`Début de la génération des User Stories pour l'EPIC: ${epicTitle}`);
+    console.log('Objectif de l\'EPIC:', epicObjective);
 
     // 1. Créer un thread
     console.log('Création du thread...');
@@ -87,12 +231,12 @@ export const generateProjectSpecifications = async (
 
     if (!threadResponse.ok) {
       const error = await threadResponse.text();
-      console.error('Erreur thread response:', error);
+      console.error('Erreur de création du thread:', error);
       throw new Error(`Erreur lors de la création du thread (${threadResponse.status}): ${error}`);
     }
 
     const thread = await threadResponse.json();
-    console.log('Thread créé:', thread.id);
+    console.log('Thread créé avec succès, ID:', thread.id);
 
     // 2. Ajouter un message au thread
     console.log('Ajout du message au thread...');
@@ -105,17 +249,15 @@ export const generateProjectSpecifications = async (
       },
       body: JSON.stringify({
         role: 'user',
-        content: `Projet : ${projectTitle}\n\nDescription détaillée : ${projectDescription}\n\nMerci de générer les EPICs et User Stories pour ce projet selon le format spécifié dans tes instructions.`
+        content: `Projet : ${projectTitle}\n\nEPIC : ${epicTitle}\n\nObjectif de l'EPIC : ${epicObjective}\n\nMerci de générer les User Stories pour cet EPIC selon le format spécifié dans tes instructions.`
       })
     });
 
     if (!messageResponse.ok) {
       const error = await messageResponse.text();
-      console.error('Erreur message response:', error);
+      console.error('Erreur d\'ajout du message:', error);
       throw new Error(`Erreur lors de l'ajout du message (${messageResponse.status}): ${error}`);
     }
-
-    console.log('Message ajouté au thread');
 
     // 3. Exécuter l'assistant
     console.log('Lancement de l\'assistant...');
@@ -127,38 +269,45 @@ export const generateProjectSpecifications = async (
         'OpenAI-Beta': 'assistants=v2'
       },
       body: JSON.stringify({
-        assistant_id: 'asst_FCjQ7uT86lbc2y1oz9opxgpO'
+        assistant_id: ASSISTANT_IDS.USER_STORIES
       })
     });
 
     if (!runResponse.ok) {
       const error = await runResponse.text();
-      console.error('Erreur run response:', error);
+      console.error('Erreur de lancement de l\'assistant:', error);
       throw new Error(`Erreur lors du lancement de l'assistant (${runResponse.status}): ${error}`);
     }
 
     const run = await runResponse.json();
-    console.log('Run créé:', run.id);
+    console.log('Run créé avec succès, ID:', run.id);
 
-    // 4. Attendre la réponse (polling avec retries)
-    console.log('Attente de la réponse...');
+    // 4. Attendre la réponse avec timeout augmenté
     let runStatus = await checkRunStatus(thread.id, run.id);
     let attempts = 0;
-    const maxAttempts = 30; // 30 secondes maximum
 
-    while (runStatus.status !== 'completed' && attempts < maxAttempts) {
+    console.log('Attente de la réponse de l\'assistant...');
+    while (runStatus.status !== 'completed' && attempts < MAX_ATTEMPTS) {
       if (runStatus.status === 'failed') {
-        console.error('Run status failed:', runStatus);
-        throw new Error('La génération a échoué: ' + (runStatus.last_error?.message || 'Erreur inconnue'));
+        const errorMessage = runStatus.last_error?.message || 'Erreur inconnue';
+        console.error('Échec de la génération:', errorMessage);
+        throw new Error('La génération des User Stories a échoué: ' + errorMessage);
       }
-      await sleep(1000);
+      
+      if (runStatus.status === 'expired') {
+        console.error('Le run a expiré');
+        throw new Error('Le run a expiré - veuillez réessayer');
+      }
+
+      console.log(`Tentative ${attempts + 1}/${MAX_ATTEMPTS} - Statut: ${runStatus.status}`);
+      await sleep(POLLING_INTERVAL);
       runStatus = await checkRunStatus(thread.id, run.id);
       attempts++;
-      console.log('Status actuel:', runStatus.status, `(tentative ${attempts}/${maxAttempts})`);
     }
 
-    if (attempts >= maxAttempts) {
-      throw new Error('Timeout: La génération a pris trop de temps');
+    if (attempts >= MAX_ATTEMPTS) {
+      console.error('Timeout atteint après', MAX_ATTEMPTS * (POLLING_INTERVAL / 1000), 'secondes');
+      throw new Error(`Timeout: La génération des User Stories a pris trop de temps (${MAX_ATTEMPTS * (POLLING_INTERVAL / 1000)} secondes)`);
     }
 
     // 5. Récupérer les messages
@@ -172,322 +321,163 @@ export const generateProjectSpecifications = async (
 
     if (!messagesResponse.ok) {
       const error = await messagesResponse.text();
-      console.error('Erreur messages response:', error);
+      console.error('Erreur de récupération des messages:', error);
       throw new Error(`Erreur lors de la récupération des messages (${messagesResponse.status}): ${error}`);
     }
 
     const messages = await messagesResponse.json();
-    
-    // Logs plus ciblés et visibles
-    console.log('---------- DÉBUT STRUCTURE DES MESSAGES ----------');
-    console.log('Nombre de messages:', messages.data?.length || 0);
-    console.log('Premier message ID:', messages.data?.[0]?.id);
-    console.log('Types de messages présents:', messages.data?.map(m => m.role).join(', '));
-    console.log('---------- FIN STRUCTURE DES MESSAGES ----------');
-    
     const assistantMessage = messages.data.find((msg: any) => msg.role === 'assistant');
 
     if (!assistantMessage) {
-      throw new Error('Pas de réponse de l\'assistant');
+      console.error('Pas de message de l\'assistant trouvé');
+      throw new Error('Pas de réponse de l\'assistant pour les User Stories');
     }
 
-    // Logs plus ciblés sur le message de l'assistant
-    console.log('---------- DÉBUT MESSAGE ASSISTANT ----------');
-    console.log('ID du message:', assistantMessage.id);
-    console.log('Rôle:', assistantMessage.role);
-    console.log('Type de contenu:', assistantMessage.content?.[0]?.type);
-    console.log('Longueur du texte:', assistantMessage.content?.[0]?.text?.value?.length || 0);
-    console.log('---------- FIN MESSAGE ASSISTANT ----------');
-    
-    // 6. Parser et formater la réponse
-    console.log('Parsing de la réponse...');
-    
-    // Vérifier le format du contenu pour éviter les erreurs
-    if (!assistantMessage.content || !assistantMessage.content[0] || !assistantMessage.content[0].text || !assistantMessage.content[0].text.value) {
-      console.error('Format de réponse inattendu:', assistantMessage);
-      throw new Error('Format de réponse inattendu de l\'assistant');
-    }
-    
-    const content = assistantMessage.content[0].text.value;
-    
-    // Afficher une partie du contenu pour le débogage
-    console.log('---------- DÉBUT CONTENU (EXTRAIT) ----------');
-    console.log(content.substring(0, 500) + '...');
-    console.log('---------- FIN CONTENU (EXTRAIT) ----------');
-    
-    // Écrire le contenu complet dans le localStorage pour consultation ultérieure
-    try {
-      localStorage.setItem('lastAssistantResponse', content);
-      console.log('Contenu complet sauvegardé dans localStorage.lastAssistantResponse pour consultation');
-      
-      // Créer une version téléchargeable du contenu pour référence
-      createDownloadableResponse(content, projectTitle);
-    } catch (e) {
-      console.log('Impossible de sauvegarder dans localStorage:', e);
-    }
-    
-    return parseAssistantResponse(content);
+    console.log('Message de l\'assistant récupéré avec succès');
+    const response = assistantMessage.content[0].text.value;
+    return parseUserStoriesResponse(response, epicTitle);
   } catch (error) {
-    console.error('Erreur détaillée lors de la génération des spécifications:', error);
+    console.error(`Erreur lors de la génération des User Stories pour l'EPIC ${epicTitle}:`, error);
     throw error;
   }
 };
 
-// Amélioration de la fonction de parsing pour mieux gérer différents formats
-const parseAssistantResponse = (response: string): ProjectContent => {
-  console.log('DÉMARRAGE DU PARSING DE LA RÉPONSE');
+const parseUserStoriesResponse = (response: string, epicTitle: string): UserStory[] => {
   try {
-    // Vérifier si c'est le format spécifique avec "### EPIC N : Titre" 
-    // comme dans l'exemple fourni par l'utilisateur
-    const epicRegex0 = /### EPIC \d+ : ([^\n]+)/g;
-    const epicTitles = [...response.matchAll(epicRegex0)].map(match => match[1].trim());
+    console.log('=== DÉBUT DU PARSING DE LA RÉPONSE DES USER STORIES ===');
+    console.log('Réponse brute de l\'assistant:', response);
     
-    if (epicTitles.length > 0) {
-      console.log('Format détecté: "### EPIC N : Titre" avec', epicTitles.length, 'EPICs');
-      console.log('Titres des EPICs:', epicTitles);
-      
-      // Diviser le contenu en sections d'EPIC
-      const epicTexts = response.split(/(?=### EPIC \d+ :)/).filter(Boolean);
-      console.log('Nombre de sections EPIC trouvées:', epicTexts.length);
-      
-      const epics = epicTexts.map((epicText, index) => {
-        const title = epicTitles[index] || `EPIC ${index + 1}`;
-        console.log(`\nTraitement de l'EPIC: ${title}`);
+    // Essayer d'abord de parser comme du JSON
+    try {
+      // Extraire le JSON de la réponse
+      const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[1];
+        const parsed = JSON.parse(jsonStr);
+        console.log('JSON parsé avec succès:', parsed);
         
-        // Extraire les informations principales de l'EPIC
-        const objective = extractDoubleStarValue(epicText, 'Objectif');
-        const problemAddressed = extractDoubleStarValue(epicText, 'Problématique adressée');
-        const businessValue = extractDoubleStarValue(epicText, 'Valeur métier');
-        
-        console.log('Valeurs extraites:', { 
-          objective: objective ? objective.substring(0, 30) + '...' : 'non trouvé',
-          problemAddressed: problemAddressed ? problemAddressed.substring(0, 30) + '...' : 'non trouvé',
-          businessValue: businessValue ? businessValue.substring(0, 30) + '...' : 'non trouvé'
-        });
-        
-        // Extraction des user stories au format "1. En tant que consultant, je veux..."
-        const userStoriesSection = epicText.includes('User Stories associées') 
-          ? epicText.split('User Stories associées')[1] 
-          : '';
-          
-        const storiesRegex = /\d+\.\s*En tant que\s+([^,]+),\s*je veux\s+([^,]+),\s*afin de\s+([^\n\.]+)/gi;
-        const storyMatches = [...userStoriesSection.matchAll(storiesRegex)];
-        
-        console.log(`Nombre de user stories trouvées dans l'EPIC ${title}:`, storyMatches.length);
-        
-        const stories = storyMatches.map(match => {
-          const persona = match[1].trim();
-          const action = match[2].trim();
-          const benefit = match[3].trim();
-          const storyText = `En tant que ${persona}, je veux ${action}, afin de ${benefit}`;
-          
-          console.log('User story extraite:', storyText.substring(0, 50) + '...');
-          
-          return {
-            epic: title,
-            story: storyText,
-            acceptanceCriteria: [], // Ces informations ne sont pas dans le format liste
-            kpis: '',              // Ces informations ne sont pas dans le format liste
-            designLink: ''         // Ces informations ne sont pas dans le format liste
-          };
-        });
-        
-        return {
-          title,
-          objective,
-          problemAddressed,
-          businessValue,
-          stories
-        };
-      });
-      
-      console.log(`Parsing terminé, ${epics.length} EPICs extraits avec ${epics.reduce((sum, epic) => sum + epic.stories.length, 0)} user stories au total`);
-      return { epics };
+        if (parsed.stories && Array.isArray(parsed.stories)) {
+          console.log(`${parsed.stories.length} stories trouvées dans le JSON`);
+          return parsed.stories.map(story => ({
+            epic: epicTitle, // Utiliser l'EPIC title fourni plutôt que celui du JSON
+            story: story.story,
+            acceptanceCriteria: story.acceptanceCriteria || [],
+            kpis: story.kpis || '',
+            designLink: story.designLink || ''
+          }));
+        }
+      }
+    } catch (jsonError) {
+      console.log('Échec du parsing JSON, tentative avec les autres formats');
     }
     
-    // Si ce n'est pas le format spécifique, essayer les autres formats...
-    // Vérifier d'abord le format avec ### EPIC N :
-    let epics: Epic[] = [];
-    const epicRegex1 = /### EPIC \d+ :([\s\S]*?)(?=### EPIC \d+ :|$)/g;
-    let epicMatches1 = [...response.matchAll(epicRegex1)];
+    // Si le parsing JSON échoue, essayer les autres formats
+    let stories = extractUserStories(response, epicTitle);
     
-    console.log(`Tentative de parsing avec regex "### EPIC N :" : ${epicMatches1.length} correspondances`);
+    if (stories.length === 0) {
+      console.log('Premier format échoué, tentative avec le format alternatif');
+      stories = extractUserStoriesAlternative(response, epicTitle);
+    }
     
-    if (epicMatches1.length > 0) {
-      console.log('Utilisation du format "### EPIC N :"');
-      epics = epicMatches1.map(match => {
-        const epicText = match[0];
-        console.log('Texte d\'un EPIC (extrait):', epicText.substring(0, 100) + '...');
-        
-        // Extraire le titre de l'EPIC
-        const titleMatch = epicText.match(/### EPIC \d+ : (.*)/);
-        const title = titleMatch ? titleMatch[1].trim() : '';
-        console.log('Titre extrait:', title);
-        
-        // Extraire objectif, problématique et valeur métier
-        const objective = extractValue(epicText, 'Objectif');
-        const problemAddressed = extractValue(epicText, 'Problématique adressée');
-        const businessValue = extractValue(epicText, 'Valeur métier');
-        
-        console.log('Objectif extrait:', objective);
-        console.log('Problématique extraite:', problemAddressed);
-        console.log('Valeur métier extraite:', businessValue);
-        
-        // Extraire les user stories
-        const stories = extractUserStories(epicText, title);
-        console.log(`Nombre de User Stories extraites: ${stories.length}`);
-        
-        return {
-          title,
-          objective,
-          problemAddressed,
-          businessValue,
-          stories
-        };
-      });
-    } else {
-      // Format alternatif sans "###" ou autre
-      console.log('Format "### EPIC N :" non détecté, tentative avec format alternatif');
+    if (stories.length === 0) {
+      console.log('Tentative avec le format simple');
+      const simpleStoryRegex = /En tant que\s+(.*?),\s*je veux\s+(.*?),\s*afin de\s+(.*?)(?:\.|$)/gi;
+      const matches = [...response.matchAll(simpleStoryRegex)];
       
-      // Essayer de détecter si les EPICs sont séparés par des lignes comme "EPIC 1 : Titre"
-      const epicRegex2 = /EPIC \d+[ :]+(.*?)(?=\n\s*\*\s*\*\*Objectif)/g;
-      const titleMatches = [...response.matchAll(epicRegex2)];
-      
-      if (titleMatches.length > 0) {
-        console.log(`Format alternatif détecté avec ${titleMatches.length} EPICs`);
-        
-        // Diviser le contenu par sections d'EPIC
-        const epicRegex3 = /EPIC \d+[ :]+[\s\S]*?(?=EPIC \d+[ :]+|$)/g;
-        const epicMatches3 = [...response.matchAll(epicRegex3)];
-        
-        epics = epicMatches3.map(match => {
-          const epicText = match[0];
-          console.log('Texte d\'un EPIC (format alternatif, extrait):', epicText.substring(0, 100) + '...');
-          
-          // Extraire le titre
-          const titleMatch = epicText.match(/EPIC \d+[ :]+(.*?)(?=\n)/);
-          const title = titleMatch ? titleMatch[1].trim() : '';
-          console.log('Titre extrait (format alternatif):', title);
-          
-          // Extraire objectif, problématique et valeur métier
-          const objective = extractValue(epicText, 'Objectif');
-          const problemAddressed = extractValue(epicText, 'Problématique adressée');
-          const businessValue = extractValue(epicText, 'Valeur métier');
-          
-          // Extraire les user stories pour ce format
-          const stories = extractUserStoriesAlternative(epicText, title);
-          console.log(`Nombre de User Stories extraites (format alternatif): ${stories.length}`);
-          
-          return {
-            title,
-            objective,
-            problemAddressed,
-            businessValue,
-            stories
-          };
-        });
-      } else {
-        // Dernier recours - format simple
-        console.log('Utilisation du format simple par défaut');
-        epics = response.split('EPIC').filter(Boolean).map(epicText => {
-          console.log('Traitement d\'un EPIC (format simple)');
-          return {
-            title: extractValue(epicText, 'Nom de l\'EPIC') || 'EPIC sans titre',
-            objective: extractValue(epicText, 'Objectif'),
-            problemAddressed: extractValue(epicText, 'Problématique adressée'),
-            businessValue: extractValue(epicText, 'Valeur métier'),
-            stories: extractUserStories(epicText, 'EPIC sans titre')
-          };
-        });
+      if (matches.length > 0) {
+        console.log(`Format simple trouvé avec ${matches.length} stories`);
+        stories = matches.map(match => ({
+          epic: epicTitle,
+          story: match[0].trim(),
+          acceptanceCriteria: [],
+          kpis: '',
+          designLink: ''
+        }));
       }
     }
     
-    console.log(`Total des EPICs extraits: ${epics.length}`);
-    return { epics };
+    console.log(`Nombre total de stories extraites: ${stories.length}`);
+    stories.forEach((story, index) => {
+      console.log(`Story ${index + 1}:`, story.story.substring(0, 100));
+    });
+    
+    return stories;
   } catch (error) {
-    console.error('Erreur détaillée lors du parsing:', error);
-    throw new Error('Format de réponse invalide: ' + error.message);
+    console.error('Erreur lors du parsing des User Stories:', error);
+    return [];
   }
-};
-
-// Fonction spéciale pour extraire les valeurs au format "* **Objectif :** texte"
-const extractDoubleStarValue = (text: string, field: string): string => {
-  // Format "* **Objectif :** texte"
-  const regex = new RegExp(`\\*\\s*\\*\\*${field}\\s*:\\*\\*\\s*([^\\n]+)`, 'i');
-  const match = text.match(regex);
-  if (match) {
-    console.log(`Valeur extraite pour ${field}:`, match[1].trim().substring(0, 30) + '...');
-    return match[1].trim();
-  }
-  return '';
-};
-
-// Fonction améliorée pour extraire les valeurs
-const extractValue = (text: string, field: string): string => {
-  // Recherche les motifs comme "**Objectif :** valeur" ou "*Objectif :* valeur"
-  const patterns = [
-    new RegExp(`\\*\\*${field}\\s*:\\*\\*\\s*([^\\n]+)`),  // **Objectif :** valeur
-    new RegExp(`\\*${field}\\s*:\\*\\s*([^\\n]+)`),        // *Objectif :* valeur
-    new RegExp(`${field}\\s*:\\s*([^\\n]+)`)              // Objectif : valeur (simple)
-  ];
-  
-  for (const regex of patterns) {
-    const match = text.match(regex);
-    if (match) {
-      console.log(`Valeur extraite pour '${field}': ${match[1].trim()}`);
-      return match[1].trim();
-    }
-  }
-  
-  console.log(`Aucune valeur trouvée pour '${field}'`);
-  return '';
 };
 
 // Fonction pour extraire les user stories - format standard
 const extractUserStories = (epicText: string, epicTitle: string): UserStory[] => {
-  console.log('Extraction des user stories pour EPIC:', epicTitle);
+  console.log('=== EXTRACTION DES USER STORIES ===');
+  console.log('EPIC:', epicTitle);
+  console.log('Texte à analyser (début):', epicText.substring(0, 200));
   
   try {
-    // Chercher le motif "##### User Story N"
-    const userStoryRegex = /##### User Story \d+\s*([\s\S]*?)(?=##### User Story \d+|$)/g;
+    // 1. Essayer d'abord le format avec sections numérotées
+    const userStoryRegex = /(?:##### )?User Story \d+[\s:]*([\s\S]*?)(?=(?:##### )?User Story \d+|$)/g;
     const matches = [...epicText.matchAll(userStoryRegex)];
     
     if (matches.length > 0) {
       console.log(`Format structuré détecté avec ${matches.length} user stories`);
       
       return matches.map(match => {
-        const storyText = match[0];
-        console.log('Texte d\'une User Story (extrait):', storyText.substring(0, 100) + '...');
+        const storyText = match[1] || match[0];
+        console.log('\nAnalyse d\'une User Story:');
+        console.log('Texte brut:', storyText.substring(0, 150));
         
-        // Extraire l'énoncé de la user story (format "En tant que... Je veux... Afin de...")
-        const storyPattern = /\*\*User Story :\*\*\s*En tant que\s+(.*?),\s*Je veux\s+(.*?),\s*Afin de\s+(.*?)\.?\n/s;
-        const storyMatch = storyText.match(storyPattern);
+        // Essayer plusieurs formats pour l'énoncé de la user story
+        const storyPatterns = [
+          /En tant que\s+(.*?),\s*[Jj]e veux\s+(.*?),\s*[Aa]fin de\s+(.*?)(?:\.|$)/s,
+          /\*\*User Story :\*\*\s*En tant que\s+(.*?),\s*[Jj]e veux\s+(.*?),\s*[Aa]fin de\s+(.*?)(?:\.|$)/s,
+          /User Story :\s*En tant que\s+(.*?),\s*[Jj]e veux\s+(.*?),\s*[Aa]fin de\s+(.*?)(?:\.|$)/s
+        ];
         
         let story = '';
-        if (storyMatch) {
-          story = `En tant que ${storyMatch[1]}, je veux ${storyMatch[2]}, afin de ${storyMatch[3]}`;
-        } else {
-          // Fallback si le format spécifique n'est pas trouvé
-          story = extractValue(storyText, 'User Story') || extractValue(storyText, 'En tant que');
+        let storyMatch = null;
+        
+        for (const pattern of storyPatterns) {
+          storyMatch = storyText.match(pattern);
+          if (storyMatch) {
+            story = `En tant que ${storyMatch[1]}, je veux ${storyMatch[2]}, afin de ${storyMatch[3]}`;
+            console.log('Format trouvé:', pattern.source);
+            console.log('Story extraite:', story);
+            break;
+          }
         }
         
-        console.log('User Story extraite:', story);
+        if (!story) {
+          // Fallback : prendre tout le texte jusqu'à la première section
+          story = storyText.split(/\n\s*\n/)[0].trim();
+          console.log('Utilisation du fallback. Story:', story);
+        }
+        
+        // Extraire les critères d'acceptance
+        const acceptanceCriteria = extractAcceptanceCriteria(storyText);
+        console.log(`${acceptanceCriteria.length} critères d'acceptance trouvés`);
+        
+        // Extraire KPIs et liens design
+        const kpis = extractValue(storyText, 'KPIs définis') || extractValue(storyText, 'KPIs') || '';
+        const designLink = extractValue(storyText, 'Lien vers la maquette') || 
+                         extractValue(storyText, 'Lien vers le design') || 
+                         extractValue(storyText, 'Design Link') || '';
         
         return {
           epic: epicTitle,
           story,
-          acceptanceCriteria: extractAcceptanceCriteria(storyText),
-          kpis: extractValue(storyText, 'KPIs définis'),
-          designLink: extractValue(storyText, 'Lien vers la maquette') || extractValue(storyText, 'Lien vers le design')
+          acceptanceCriteria,
+          kpis,
+          designLink
         };
       });
-    } else {
-      // Essayer le format plus simple
-      console.log('Format simple des user stories utilisé');
-      return extractUserStoriesAlternative(epicText, epicTitle);
     }
+    
+    console.log('Format structuré non trouvé, passage au format alternatif');
+    return [];
   } catch (error) {
     console.error('Erreur lors de l\'extraction des user stories:', error);
+    console.error('Stack trace:', error.stack);
     return [];
   }
 };
@@ -576,6 +566,39 @@ const extractAcceptanceCriteria = (storyText: string): { given: string; when: st
   }
 };
 
+// Fonction spéciale pour extraire les valeurs au format "* **Objectif :** texte"
+const extractDoubleStarValue = (text: string, field: string): string => {
+  // Format "* **Objectif :** texte"
+  const regex = new RegExp(`\\*\\s*\\*\\*${field}\\s*:\\*\\*\\s*([^\\n]+)`, 'i');
+  const match = text.match(regex);
+  if (match) {
+    console.log(`Valeur extraite pour ${field}:`, match[1].trim().substring(0, 30) + '...');
+    return match[1].trim();
+  }
+  return '';
+};
+
+// Fonction améliorée pour extraire les valeurs
+const extractValue = (text: string, field: string): string => {
+  // Recherche les motifs comme "**Objectif :** valeur" ou "*Objectif :* valeur"
+  const patterns = [
+    new RegExp(`\\*\\*${field}\\s*:\\*\\*\\s*([^\\n]+)`),  // **Objectif :** valeur
+    new RegExp(`\\*${field}\\s*:\\*\\s*([^\\n]+)`),        // *Objectif :* valeur
+    new RegExp(`${field}\\s*:\\s*([^\\n]+)`)              // Objectif : valeur (simple)
+  ];
+  
+  for (const regex of patterns) {
+    const match = text.match(regex);
+    if (match) {
+      console.log(`Valeur extraite pour '${field}': ${match[1].trim()}`);
+      return match[1].trim();
+    }
+  }
+  
+  console.log(`Aucune valeur trouvée pour '${field}'`);
+  return '';
+};
+
 // Fonction pour créer un fichier téléchargeable contenant la réponse
 const createDownloadableResponse = (content: string, projectTitle: string) => {
   try {
@@ -604,5 +627,25 @@ const createDownloadableResponse = (content: string, projectTitle: string) => {
     document.body.removeChild(element);
   } catch (e) {
     console.error('Erreur lors de la création du fichier téléchargeable:', e);
+  }
+};
+
+// Fonction pour parser la réponse de l'assistant pour les EPICs
+const parseAssistantResponse = (response: string): ProjectContent => {
+  try {
+    const epics = response.split('### EPIC').filter(Boolean).map(epicText => {
+      const title = extractValue(epicText, 'Titre') || 'EPIC sans titre';
+      return {
+        title,
+        objective: extractValue(epicText, 'Objectif'),
+        problemAddressed: extractValue(epicText, 'Problématique adressée'),
+        businessValue: extractValue(epicText, 'Valeur métier'),
+        stories: []
+      };
+    });
+    return { epics };
+  } catch (error) {
+    console.error('Erreur lors du parsing de la réponse:', error);
+    throw error;
   }
 }; 

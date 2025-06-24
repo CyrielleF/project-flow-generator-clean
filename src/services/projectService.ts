@@ -135,11 +135,12 @@ export const saveProjectContent = async (projectId: string, content: ProjectCont
     for (const story of epic.stories) {
       console.log('Sauvegarde de la User Story:', story.story);
       
+      // Insérer la story avec la structure correcte de la table
       const { data: storyData, error: storyError } = await supabase
         .from('stories')
         .insert({
-          title: story.story,
-          story_description: story.story,
+          title: story.story, // Utiliser le champ story comme titre
+          story_description: story.story, // Et aussi comme description
           epic_id: epicId,
           status: story.status || 'todo'
         })
@@ -159,10 +160,10 @@ export const saveProjectContent = async (projectId: string, content: ProjectCont
         console.log('Sauvegarde des critères d\'acceptation pour la story:', storyId);
         
         const acceptanceCriteriaInserts = story.acceptanceCriteria.map(criteria => ({
+          story_id: storyId,
           given_condition: criteria.given,
           when_action: criteria.when,
-          then_result: criteria.then,
-          story_id: storyId
+          then_result: criteria.then
         }));
 
         const { error: criteriaError } = await supabase
@@ -198,8 +199,6 @@ export const saveProjectContent = async (projectId: string, content: ProjectCont
       }
     }
   }
-  
-  console.log('Sauvegarde du contenu terminée avec succès');
 };
 
 // Récupérer tous les projets d'un utilisateur
@@ -328,17 +327,24 @@ export const getProjectById = async (projectId: string): Promise<Project | null>
 // Récupérer le contenu d'un projet (EPICs et User Stories) depuis Supabase
 export const getProjectContent = async (projectId: string): Promise<ProjectContent> => {
   try {
-    // Récupérer les EPICs avec leurs stories et critères d'acceptation en une seule requête
+    console.log('Début de getProjectContent pour le projet:', projectId);
+    
+    // 1. D'abord, vérifions que le projet existe
+    const { data: projectData, error: projectError } = await supabase
+      .from('projects')
+      .select('id')
+      .eq('id', projectId)
+      .single();
+
+    if (projectError || !projectData) {
+      console.error('Projet non trouvé:', projectError);
+      throw new Error('Projet non trouvé');
+    }
+
+    // 2. Récupérer les EPICs
     const { data: epicsData, error: epicsError } = await supabase
       .from('epics')
-      .select(`
-        *,
-        stories:stories(
-          *,
-          acceptance_criteria(*),
-          story_metadata(*)
-        )
-      `)
+      .select('id, title, objective, problem_addressed, business_value')
       .eq('project_id', projectId)
       .order('created_at', { ascending: true });
 
@@ -351,45 +357,78 @@ export const getProjectContent = async (projectId: string): Promise<ProjectConte
       return { epics: [] };
     }
 
-    // Transformer les données au format attendu
-    const content: ProjectContent = {
-      epics: epicsData.map(epic => ({
+    console.log('EPICs trouvés:', epicsData);
+
+    // 3. Pour chaque EPIC, récupérer ses stories
+    const epicsWithStories = await Promise.all(epicsData.map(async (epic) => {
+      // Récupérer les stories de l'EPIC
+      const { data: storiesData, error: storiesError } = await supabase
+        .from('stories')
+        .select(`
+          id,
+          title,
+          story_description,
+          status,
+          acceptance_criteria (
+            id,
+            given_condition,
+            when_action,
+            then_result
+          ),
+          story_metadata (
+            kpis,
+            design_link
+          )
+        `)
+        .eq('epic_id', epic.id);
+
+      if (storiesError) {
+        console.error(`Erreur lors de la récupération des stories pour l'EPIC ${epic.id}:`, storiesError);
+        return {
+          id: epic.id,
+          title: epic.title,
+          objective: epic.objective || '',
+          problemAddressed: epic.problem_addressed || '',
+          businessValue: epic.business_value || '',
+          stories: []
+        };
+      }
+
+      console.log(`Stories trouvées pour l'EPIC ${epic.id}:`, storiesData);
+
+      const stories = (storiesData || []).map(story => ({
+        id: story.id,
+        epic: epic.title,
+        story: story.story_description || story.title,
+        acceptanceCriteria: (story.acceptance_criteria || []).map(criteria => ({
+          id: criteria.id,
+          given: criteria.given_condition || '',
+          when: criteria.when_action || '',
+          then: criteria.then_result || ''
+        })),
+        kpis: story.story_metadata?.[0]?.kpis || '',
+        designLink: story.story_metadata?.[0]?.design_link || '',
+        status: (story.status || 'todo') as "todo" | "in_progress" | "done"
+      }));
+
+      return {
         id: epic.id,
         title: epic.title,
         objective: epic.objective || '',
         problemAddressed: epic.problem_addressed || '',
         businessValue: epic.business_value || '',
-        stories: (epic.stories || []).map(story => ({
-          id: story.id,
-          epic: epic.title,
-          story: story.story_description || story.title,
-          acceptanceCriteria: (story.acceptance_criteria || []).map(criteria => ({
-            id: criteria.id,
-            given: criteria.given_condition || '',
-            when: criteria.when_action || '',
-            then: criteria.then_result || ''
-          })),
-          kpis: story.story_metadata?.kpis || '',
-          designLink: story.story_metadata?.design_link || '',
-          status: story.status as "todo" | "in_progress" | "done"
-        }))
-      }))
+        stories
+      };
+    }));
+
+    const content: ProjectContent = {
+      epics: epicsWithStories
     };
 
+    console.log('Contenu final:', JSON.stringify(content, null, 2));
     return content;
   } catch (error) {
-    console.error('Erreur lors de la récupération du contenu du projet:', error);
-    
-    // Fallback vers localStorage pour la compatibilité
-    const contentJson = localStorage.getItem(`project_${projectId}_content`);
-    if (contentJson) {
-      try {
-        return JSON.parse(contentJson) as ProjectContent;
-      } catch (parseError) {
-        console.error(`Erreur lors du parsing du contenu du projet ${projectId}:`, parseError);
-      }
-    }
-    
+    console.error('Erreur détaillée lors de la récupération du contenu:', error);
     throw error;
   }
 };
