@@ -12,8 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight, Plus, FileText } from "lucide-react";
 import { toast } from "sonner";
-import { AIService } from "../services/aiService";
 import { getProjectContent } from "@/services/projectService";
+import { supabase } from "@/lib/supabase";
 
 interface Epic {
   id: string;
@@ -47,14 +47,28 @@ const EpicsView = ({ projectId }: EpicsViewProps) => {
   useEffect(() => {
     const loadEpics = async () => {
       try {
-        console.log("Début du chargement des EPICs pour le projet:", projectId);
+        console.log("=== Début du chargement des EPICs ===");
+        console.log("ProjectID:", projectId);
+        
+        // Vérifier l'authentification
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        console.log("État de l'authentification:", { user, authError });
+        
+        if (!user) {
+          console.error("Utilisateur non authentifié");
+          navigate("/login");
+          return;
+        }
+
         setIsLoading(true);
+        console.log("Appel de getProjectContent...");
         const content = await getProjectContent(projectId);
-        console.log("Contenu reçu de getProjectContent:", content);
+        console.log("Réponse de getProjectContent:", content);
         
         // Transformer les données au format attendu par le composant
+        console.log("Transformation des EPICs...");
         const formattedEpics = content.epics.map(epic => {
-          console.log("Transformation de l'EPIC:", epic);
+          console.log("Traitement de l'EPIC:", epic);
           return {
             id: epic.id || '',
             title: epic.title,
@@ -62,22 +76,28 @@ const EpicsView = ({ projectId }: EpicsViewProps) => {
             objective: epic.objective,
             businessProblem: epic.problemAddressed,
             businessValue: epic.businessValue,
-            stories: epic.stories.map(story => ({
-              id: story.id || '',
-              title: story.story,
-              description: story.story,
-              acceptanceCriteria: story.acceptanceCriteria.map(ac => `${ac.given} ${ac.when} ${ac.then}`),
-              definitionOfDone: [],
-              mockupUrl: story.designLink,
-              status: story.status?.replace('_', '-') as "todo" | "in-progress" | "done" || "todo"
-            }))
+            stories: epic.stories.map(story => {
+              console.log("Traitement de la story:", story);
+              return {
+                id: story.id || '',
+                title: story.story,
+                description: story.story,
+                acceptanceCriteria: story.acceptanceCriteria.map(ac => `${ac.given} ${ac.when} ${ac.then}`),
+                definitionOfDone: [],
+                mockupUrl: story.designLink,
+                status: story.status?.replace('_', '-') as "todo" | "in-progress" | "done" || "todo"
+              };
+            })
           };
         });
         
         console.log("EPICs formatés:", formattedEpics);
         setEpics(formattedEpics);
       } catch (error) {
-        console.error('Erreur détaillée lors du chargement des EPICs:', error);
+        console.error('=== Erreur détaillée lors du chargement des EPICs ===');
+        console.error('Type d\'erreur:', error instanceof Error ? 'Error' : typeof error);
+        console.error('Message d\'erreur:', error instanceof Error ? error.message : error);
+        console.error('Stack trace:', error instanceof Error ? error.stack : 'Non disponible');
         toast.error("Erreur lors du chargement des EPICs");
       } finally {
         setIsLoading(false);
@@ -85,7 +105,7 @@ const EpicsView = ({ projectId }: EpicsViewProps) => {
     };
 
     loadEpics();
-  }, [projectId]);
+  }, [projectId, navigate]);
 
   const viewUserStories = (epicId: string) => {
     navigate(`/project/${projectId}?tab=stories&epic=${epicId}`);

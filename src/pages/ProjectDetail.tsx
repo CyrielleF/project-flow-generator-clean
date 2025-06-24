@@ -28,7 +28,7 @@ interface Epic {
 }
 
 const ProjectDetail = () => {
-  const { projectId } = useParams();
+  const { id: projectId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [project, setProject] = useState<Project | null>(null);
@@ -46,10 +46,15 @@ const ProjectDetail = () => {
   // Vérification de l'authentification
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      console.log("=== Vérification de l'authentification ===");
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      console.log("État de l'authentification:", { user, authError });
+      
       if (!user) {
+        console.log("Utilisateur non authentifié, redirection vers /login");
         navigate("/login");
       } else {
+        console.log("Utilisateur authentifié:", user.email);
         setAuthChecked(true);
       }
     };
@@ -59,14 +64,21 @@ const ProjectDetail = () => {
   // Chargement des données du projet
   useEffect(() => {
     const loadProject = async () => {
-      if (!authChecked || !projectId) return;
+      console.log("=== Début loadProject ===");
+      console.log("État actuel:", { authChecked, projectId });
+      
+      if (!authChecked || !projectId) {
+        console.log("Conditions non remplies pour charger le projet");
+        return;
+      }
 
       try {
         setIsLoading(true);
-        console.log("Début du chargement du projet:", projectId);
+        console.log("Chargement du projet:", projectId);
 
         // Charger les détails du projet depuis Supabase
         const projectData = await getProjectById(projectId);
+        console.log("Réponse getProjectById:", projectData);
         
         if (!projectData) {
           console.error("Projet non trouvé:", projectId);
@@ -80,23 +92,50 @@ const ProjectDetail = () => {
         
         // Charger les EPICs et User Stories depuis Supabase
         try {
-          console.log("Début du chargement du contenu du projet...");
+          console.log("=== Chargement du contenu du projet ===");
           const content = await getProjectContent(projectId);
-          console.log("Contenu du projet chargé avec succès:", content);
-          console.log("Nombre d'EPICs:", content.epics.length);
+          console.log("Contenu brut reçu:", content);
+          
+          if (!content || !content.epics) {
+            console.warn("Contenu invalide reçu:", content);
+            return;
+          }
+          
+          console.log("Nombre d'EPICs trouvés:", content.epics.length);
           content.epics.forEach((epic, index) => {
-            console.log(`EPIC ${index + 1}:`, epic.title);
-            console.log(`Nombre de stories pour cet EPIC: ${epic.stories.length}`);
+            console.log(`EPIC ${index + 1}:`, {
+              id: epic.id,
+              title: epic.title,
+              storiesCount: epic.stories?.length || 0
+            });
+            if (epic.stories) {
+              epic.stories.forEach((story, storyIndex) => {
+                console.log(`  Story ${storyIndex + 1}:`, {
+                  id: story.id,
+                  title: story.story,
+                  status: story.status
+                });
+              });
+            }
           });
+          
+          console.log("Mise à jour du state projectContent");
           setProjectContent(content);
         } catch (contentError) {
-          console.error("Erreur détaillée lors du chargement du contenu:", contentError);
+          console.error("=== Erreur lors du chargement du contenu ===");
+          console.error("Type d'erreur:", contentError instanceof Error ? 'Error' : typeof contentError);
+          console.error("Message:", contentError instanceof Error ? contentError.message : contentError);
+          console.error("Stack:", contentError instanceof Error ? contentError.stack : 'Non disponible');
           toast.error("Impossible de charger le contenu du projet");
         }
       } catch (error) {
-        console.error("Erreur détaillée lors du chargement du projet:", error);
+        console.error("=== Erreur lors du chargement du projet ===");
+        console.error("Type d'erreur:", error instanceof Error ? 'Error' : typeof error);
+        console.error("Message:", error instanceof Error ? error.message : error);
+        console.error("Stack:", error instanceof Error ? error.stack : 'Non disponible');
         toast.error("Erreur lors du chargement du projet");
       } finally {
+        console.log("Fin du chargement, isLoading mis à false");
         setIsLoading(false);
       }
     };
@@ -106,22 +145,37 @@ const ProjectDetail = () => {
 
   // Fonction pour transformer projectContent en un format plus simple pour l'affichage
   const getFormattedEpics = (): Epic[] => {
-    if (!projectContent) return [];
+    console.log("=== Formatage des EPICs ===");
+    console.log("ProjectContent actuel:", projectContent);
     
-    return projectContent.epics.map(epic => ({
-      id: epic.id,
-      title: epic.title,
-      description: epic.objective, // Utiliser l'objectif comme description
-      objective: epic.objective,
-      problemAddressed: epic.problemAddressed,
-      businessValue: epic.businessValue,
-      stories: epic.stories.map(story => ({
-        id: story.id,
-        title: story.story, // Utiliser le champ story comme titre
-        description: story.story,
-        status: story.status
-      }))
-    }));
+    if (!projectContent) {
+      console.log("Pas de contenu à formater");
+      return [];
+    }
+    
+    const formatted = projectContent.epics.map(epic => {
+      console.log("Formatage de l'EPIC:", epic.title);
+      return {
+        id: epic.id,
+        title: epic.title,
+        description: epic.objective,
+        objective: epic.objective,
+        problemAddressed: epic.problemAddressed,
+        businessValue: epic.businessValue,
+        stories: epic.stories.map(story => {
+          console.log("Formatage de la story:", story.story);
+          return {
+            id: story.id,
+            title: story.story,
+            description: story.story,
+            status: story.status
+          };
+        })
+      };
+    });
+    
+    console.log("EPICs formatés:", formatted);
+    return formatted;
   };
 
   const handleDeleteProject = async () => {
